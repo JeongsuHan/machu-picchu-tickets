@@ -231,6 +231,42 @@ async function push(title, text) {
   return false;
 }
 
+/**
+ * Daily "still watching" note: once a day, from 08:00 Korea time, after a
+ * healthy check that found nothing on sale. Sent at low priority (no sound).
+ * ntfy keeps recent messages, so it asks ntfy whether today's note already
+ * went out; that way restarts of the workflow never send it twice.
+ */
+async function heartbeat(headline, routes) {
+  const topic = process.env.NTFY_TOPIC;
+  if (!topic) return;
+  try {
+    const kst = new Date(Date.now() + 9 * 3600_000);
+    if (kst.getUTCHours() < 8) return;
+    const day = `${kst.getUTCMonth() + 1}/${kst.getUTCDate()}`;
+    const marker = `(${day})`;
+    const recent = await fetch(`https://ntfy.sh/${topic}/json?poll=1&since=24h`, { signal: AbortSignal.timeout(15000) });
+    if (!recent.ok) return;
+    const sent = (await recent.text()).split('\n').filter(Boolean).some(line => {
+      try { const m = JSON.parse(line); return (m.tags || []).includes('heartbeat') && (m.title || '').includes(marker); } catch { return false; }
+    });
+    if (sent) return;
+    const time = `${pad(kst.getUTCHours())}:${pad(kst.getUTCMinutes())}`;
+    const res = await fetch('https://ntfy.sh/', {
+      method: 'POST', signal: AbortSignal.timeout(15000),
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        topic, priority: 2, tags: ['heartbeat', 'white_check_mark'], click: SITE,
+        title: `마추픽추 알람 정상 작동 ${marker}`,
+        message: `${FROM} 표: 아직 판매 전\n마지막 확인 ${time} (한국시간), 노선 ${routes}개 정상 확인`,
+      }),
+    });
+    console.log(res.ok ? 'heartbeat sent' : `heartbeat failed: HTTP ${res.status}`);
+  } catch (e) {
+    console.log('heartbeat failed:', String(e));
+  }
+}
+
 function table(results) {
   const dates = Object.keys(results[0].dates);
   const mark = { available: '✅', unavailable: '—', unknown: '?' };
@@ -337,6 +373,7 @@ async function checkOnce() {
     throw new Error(`could not read the calendar for ${unknown} of ${states.length} route-days`);
   }
   await clearBroken();
+  if (!slots.length) await heartbeat(headline, results.length);
 }
 
 const deadline = Date.now() + LOOP_MS;
